@@ -1,6 +1,6 @@
 # Homebridge Plugin for Nature Remo Light Devices
 ## これなに
-NatureRemoに登録された照明機器を操作するためのHomebridge用プラグインです。
+NatureRemoに登録された照明機器を操作するためのHomebridge用プラグインです。全灯、常夜灯がある照明に対応し、full設定がtrueの場合は明るさ81%以上で全灯、night設定がtrueの場合は明るさ19%以下で常夜灯になります。また、full設定がtrueの場合、単に照明をONにした場合は全灯になります。
 
 ## 使い方
 頑張ってnpmで入れてください。
@@ -10,25 +10,29 @@ NatureRemoに登録された照明機器を操作するためのHomebridge用プ
 
 複数のデバイスがある場合にはそのまま複数登録してください。
 
-- `accessory` は `NatureRemoLightDevice` で固定です。
+- `accessory` は `NatureRemoLightDeviceExt` で固定です。
 - `accessToken` は [公式サイト](https://home.nature.global/)から発行してください。
 - `id` は下記のID取得例に従って取得してください。
 - `name` は任意に設定可能です。
+- 全灯に対応させる場合は`full` にtrueを設定してください。
+- 常夜灯に対応させる場合は`night` にtrueを設定してください。
 
 
 ```json
 "accessories": [
   {
-    "accessory": "NatureRemoLightDevice",
+    "accessory": "NatureRemoLightDeviceExt",
     "accessToken": "SECRET_TOKEN",
     "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-    "name": "リビングの電気"
+    "name": "リビングの照明"
   },
   {
       "accessory": "NatureRemoLightDevice",
       "accessToken": "SECRET_TOKEN",
       "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-      "name": "寝室の電気"
+      "name": "全灯と常夜灯のある照明",
+      "full": true,
+      "night": true
   },
 ]
 ```

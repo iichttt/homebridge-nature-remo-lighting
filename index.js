@@ -9,8 +9,8 @@ module.exports = homebridge => {
   Characteristic = homebridge.hap.Characteristic;
 
   homebridge.registerAccessory(
-    'homebridge-nature-remo-lights',
-    'NatureRemoLightDevice',
+    'homebridge-nature-remo-lights-ext',
+    'NatureRemoLightDeviceExt',
     NatureRemoLightDevice
   );
 };
@@ -19,6 +19,11 @@ class NatureRemoLightDevice {
   constructor(log, config, api) {
     this.log = log;
     this.config = config;
+    this.full = config.full;
+    this.night = config.night;
+    this.brightness = 100;
+    this.dimming = this.full || this.night;
+    this.lastcmd = config.full ? "on-100" : "on";
 
     if (api) {
       this.api = api;
@@ -40,7 +45,31 @@ class NatureRemoLightDevice {
       .on('get', this.getOnCharacteristicHandler.bind(this))
       .on('set', this.setOnCharacteristicHandler.bind(this));
 
+    if (this.dimming) {
+      lightBulb.getCharacteristic(Characteristic.Brightness)
+        .on('get', this.getBrightnessCharacteristicHandler.bind(this))
+        .on('set', this.setBrightnessCharacteristicHandler.bind(this));
+    }
     return [informationService, lightBulb];
+  }
+
+  async getBrightnessCharacteristicHandler(callback) {
+    callback(null, this.brightness);
+  }
+
+  async setBrightnessCharacteristicHandler(value, callback) {
+    let buttonstr;
+    if (this.night && value < 20) {
+      buttonstr = 'night'
+    } else if (this.full && value > 80) {
+      buttonstr = 'on-100'
+    } else {
+      buttonstr = 'on'
+    } 
+
+    this.lastcmd = buttonstr;
+    this.brightness = value;
+    callback(null);
   }
 
   async getOnCharacteristicHandler(callback) {
@@ -68,13 +97,17 @@ class NatureRemoLightDevice {
       method: 'POST',
       url: `${BASE_URL}/1/appliances/${this.config.id}/light`,
       form: {
-        button: value ? 'on' : 'off',
+        button: value ? this.lastcmd : 'off',
       },
       headers: {
         Authorization: `Bearer ${this.config.accessToken}`,
       },
     };
-    await request(options);
+    await request(options, function (error, response, body) {
+      if(error){
+        this.log(error);
+      }
+    });
     callback(null);
   }
 }

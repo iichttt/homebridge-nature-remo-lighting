@@ -1,10 +1,10 @@
 {
-  "name": "homebridge-nature-remo-lights",
-  "version": "1.0.2",
+  "name": "homebridge-nature-remo-lights-ext",
+  "version": "0.0.1",
   "description": "Homebridge plugin for Light Devices connected to Nature Remo",
-  "repository": "https://github.com/aruneko/homebridge-nature-remo-lights",
+  "repository": "https://github.com/burabura714/homebridge-nature-remo-lights-ext",
   "main": "index.js",
-  "author": "Aruneko",
+  "author": "burabura714",
   "license": "MIT",
   "keywords": [
     "homebridge-plugin"
