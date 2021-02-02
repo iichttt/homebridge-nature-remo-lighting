@@ -58,17 +58,16 @@ class NatureRemoLightDevice {
   }
 
   async setBrightnessCharacteristicHandler(value, callback) {
-    let buttonstr;
     if (this.night && value < 20) {
-      buttonstr = 'night'
+      this.lastcmd = 'night'
     } else if (this.full && value > 80) {
-      buttonstr = 'on-100'
+      this.lastcmd = 'on-100'
     } else {
-      buttonstr = 'on'
+      this.lastcmd = 'on'
     } 
 
-    this.lastcmd = buttonstr;
     this.brightness = value;
+    this.log("brightness has changed.");
     callback(null);
   }
 
@@ -86,6 +85,7 @@ class NatureRemoLightDevice {
         res => res.id === this.config.id
       )[0];
       state = device.light.state.power === 'on';
+      this.log("retrieved light state from nature remo cloud.");
     } catch (e) {
       this.log(e);
     }
@@ -104,10 +104,13 @@ class NatureRemoLightDevice {
       },
     };
     await request(options, function (error, response, body) {
-      if(error){
+      if (error) {
         this.log(error);
+      } else if (response.statusCode != 200) {
+        this.log(`status code is not 200. code: ${response.statusCode}`);
       }
     });
+    this.log(`sent ${options.form.button} button operation to nature remo cloud.`);
     callback(null);
   }
 }
