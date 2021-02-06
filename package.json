@@ -1,6 +1,6 @@
 {
   "name": "homebridge-nature-remo-lights-ext",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Homebridge plugin for Light Devices connected to Nature Remo",
   "repository": "https://github.com/burabura714/homebridge-nature-remo-lights-ext",
   "main": "index.js",
