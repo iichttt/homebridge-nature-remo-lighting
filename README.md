@@ -1,9 +1,9 @@
 # Homebridge Plugin for Nature Remo Light Devices
-## これなに
+## 何のプラグイン？
 NatureRemoに登録された照明機器を操作するためのHomebridge用プラグインです。全灯、常夜灯がある照明に対応し、full設定がtrueの場合は明るさ81%以上で全灯、night設定がtrueの場合は明るさ19%以下で常夜灯になります。また、full設定がtrueの場合、単に照明をONにした場合は全灯になります。
 
 ## 使い方
-頑張ってnpmで入れてください。
+npmでインストールします。パッケージ名はhomebridge-nature-remo-lights-extです。
 
 ## configの書き方
 `accessories` に書き加えます。下記説明に注意しながら記入してください。
