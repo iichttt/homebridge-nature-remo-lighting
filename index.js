@@ -164,7 +164,7 @@ class NatureRemoLightDevice {
     };
     await this.httpRequestSerialized(options, callback, value, () => {
       this.state = value ? this.state_to : 'off';
-    });
+    }, false);
   }
 
   async httpRequestSerialized(option, callback, value, statehandler) {
@@ -173,7 +173,7 @@ class NatureRemoLightDevice {
       release = await mutex.acquire();
       let response = await request(option);
       statehandler();
-      callback(null, value);
+      callback(null);
     } catch (e) {
       this.log(e);
       callback(e);
