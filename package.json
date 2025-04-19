@@ -1,31 +1,27 @@
 {
-  "name": "homebridge-nature-remo-lights-ext",
-  "version": "0.0.5",
-  "description": "Homebridge plugin for Light Devices connected to Nature Remo",
-  "repository": "https://github.com/burabura714/homebridge-nature-remo-lights-ext",
+  "name": "homebridge-nature-remo-lighting",
+  "version": "1.0.0",
+  "description": "Homebridge accessory to control Nature Remo lights with 20%‐step dimming",
   "main": "index.js",
-  "author": "burabura714",
-  "license": "MIT",
   "keywords": [
-    "homebridge-plugin"
+    "homebridge-plugin",
+    "nature-remo",
+    "light",
+    "dimming",
+    "homekit"
   ],
-  "engines": {
-    "node": ">=10.16.0",
-    "homebridge": ">=0.4.50"
+  "author": "iichttt",
+  "license": "MIT",
+  "dependencies": {
+    "await-semaphore": "^0.2.2",
+    "request-promise-native": "^1.0.9"
   },
-  "devDependencies": {
-    "eslint": "^6.2.2",
-    "eslint-config-prettier": "^6.1.0",
-    "eslint-plugin-prettier": "^3.1.0",
-    "prettier": "^1.18.2"
+  "engines": {
+    "node": ">=12.0.0",
+    "homebridge": ">=1.3.0"
   },
   "scripts": {
-    "lint": "eslint ./**/*.js",
-    "lint:fix": "yarn lint --fix"
-  },
-  "dependencies": {
-    "await-semaphore": "^0.1.3",
-    "request": "^2.88.0",
-    "request-promise-native": "^1.0.7"
+    "lint": "eslint .",
+    "test": "echo \"No tests specified\" && exit 0"
   }
 }
