@@ -1,4 +1,5 @@
-const request = require('request-promise-native');
+const axios = require('axios');
+const querystring = require('querystring');
 const semaphore = require('await-semaphore');
 
 const mutex = new semaphore.Mutex();
@@ -61,7 +62,7 @@ class NatureRemoLighting {
     return [informationService, lightService];
   }
 
-  // Fetch appliances list with TTL caching
+  // fetch appliances list with TTL cache
   async fetchDevices() {
     const now = Date.now();
     if (this.cache.data && now - this.cache.timestamp < this.cache.ttl) {
@@ -69,12 +70,11 @@ class NatureRemoLighting {
     }
     const release = await mutex.acquire();
     try {
-      const options = {
-        url: `${BASE_URL}/1/appliances`,
-        headers: { Authorization: `Bearer ${this.config.accessToken}` },
-      };
-      const body = await request(options);
-      this.cache.data = JSON.parse(body);
+      const resp = await axios.get(
+        `${BASE_URL}/1/appliances`,
+        { headers: { Authorization: `Bearer ${this.config.accessToken}` } }
+      );
+      this.cache.data = resp.data;
       this.cache.timestamp = now;
       return this.cache.data;
     } finally {
@@ -105,7 +105,7 @@ class NatureRemoLighting {
     try {
       this.log(`Setting power to ${value ? 'ON' : 'OFF'}`);
       const button = value ? 'on' : 'off';
-      await this.httpRequest({ form: { button } });
+      await this.httpRequest(button);
       this.state = button;
       this.brightness = value ? (this.brightness > 0 ? this.brightness : 20) : 0;
       callback(null);
@@ -149,22 +149,22 @@ class NatureRemoLighting {
 
       // OFF
       if (step === 0) {
-        await this.httpRequest({ form: { button: 'off' } });
+        await this.httpRequest('off');
       }
       // Recall last‐level (20%)
       else if (step === 1) {
-        await this.httpRequest({ form: { button: 'on' } });
+        await this.httpRequest('on');
       }
       // FULL ON (100%)
       else if (step === 5) {
-        await this.httpRequest({ form: { button: 'on-100' } });
+        await this.httpRequest('on-100');
       }
       // Intermediate: step up/down
       else {
         const delta = step - prevStep;
         const button = delta > 0 ? 'bright-up' : 'bright-down';
         for (let i = 0; i < Math.abs(delta); i++) {
-          await this.httpRequest({ form: { button } });
+          await this.httpRequest(button);
         }
       }
 
@@ -176,21 +176,23 @@ class NatureRemoLighting {
     }
   }
 
-  // Helper: serialize HTTP calls
-  async httpRequest(options) {
+  // Helper: send a light command
+  async httpRequest(button) {
     const release = await mutex.acquire();
     try {
-      await request({
-        method: options.method || 'GET',
-        url: options.url || `${BASE_URL}/1/appliances/${this.config.id}/light`,
-        form: options.form,
-        headers: options.headers || { Authorization: `Bearer ${this.config.accessToken}` },
-      });
+      await axios.post(
+        `${BASE_URL}/1/appliances/${this.config.id}/light`,
+        querystring.stringify({ button }),
+        { headers: {
+            Authorization: `Bearer ${this.config.accessToken}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        }
+      );
     } finally {
       release();
-      if (options.form && options.form.button) {
-        this.log(`Sent '${options.form.button}' to Nature Remo`);
-      }
+      this.log(`Sent '${button}' to Nature Remo`);
     }
   }
 }
+
