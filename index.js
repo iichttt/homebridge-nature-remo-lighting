@@ -1,38 +1,39 @@
 const request = require('request-promise-native');
 const semaphore = require('await-semaphore');
+
 const mutex = new semaphore.Mutex();
-
 let Service, Characteristic;
-
 const BASE_URL = 'https://api.nature.global';
 
-module.exports = homebridge => {
+module.exports = (homebridge) => {
   Service = homebridge.hap.Service;
   Characteristic = homebridge.hap.Characteristic;
 
   homebridge.registerAccessory(
-    'homebridge-nature-remo-lights-ext',
-    'NatureRemoLightDeviceExt',
-    NatureRemoLightDevice
+    'homebridge-nature-remo-lighting',
+    'NatureRemoLighting',
+    NatureRemoLighting
   );
 };
 
-class NatureRemoLightDevice {
+class NatureRemoLighting {
   constructor(log, config, api) {
     this.log = log;
     this.config = config;
-    this.full = config.full;
-    this.night = config.night;
-    this.brightness = -1;
-    this.dimming = this.full || this.night;
+    this.brightness = -1;  // unknown until first GET
+    this.state = null;
+    this.api = api;
 
-    this.state_to = config.full ? "on-100" : "on";
-    this.state;
+    // in-memory cache for appliances
+    this.cache = {
+      timestamp: 0,
+      data: null,
+      ttl: config.refreshInterval || 5000,
+    };
 
     if (api) {
-      this.api = api;
       this.api.on('didFinishLaunching', () => {
-        this.log('DidFinishLaunching');
+        this.log('Homebridge finished launching');
       });
     }
   }
@@ -41,145 +42,155 @@ class NatureRemoLightDevice {
     const informationService = new Service.AccessoryInformation()
       .setCharacteristic(Characteristic.Manufacturer, 'Nature, Inc.')
       .setCharacteristic(Characteristic.Model, 'NatureRemo')
-      .setCharacteristic(Characteristic.SerialNumber, 'nature-remo');
+      .setCharacteristic(Characteristic.SerialNumber, this.config.id);
 
-    const lightBulb = new Service.Lightbulb(this.config.name);
-    lightBulb
+    const lightService = new Service.Lightbulb(this.config.name);
+
+    lightService
       .getCharacteristic(Characteristic.On)
-      .on('get', this.getOnCharacteristicHandler.bind(this))
-      .on('set', this.setOnCharacteristicHandler.bind(this));
+      .on('get', this.handleGetOn.bind(this))
+      .on('set', this.handleSetOn.bind(this));
 
-    if (this.dimming) {
-      lightBulb.getCharacteristic(Characteristic.Brightness)
-        .on('get', this.getBrightnessCharacteristicHandler.bind(this))
-        .on('set', this.setBrightnessCharacteristicHandler.bind(this));
-    }
-    return [informationService, lightBulb];
+    // Always support brightness with 20% steps
+    lightService
+      .getCharacteristic(Characteristic.Brightness)
+      .setProps({ minStep: 20 })
+      .on('get', this.handleGetBrightness.bind(this))
+      .on('set', this.handleSetBrightness.bind(this));
+
+    return [informationService, lightService];
   }
 
-  async getBrightnessCharacteristicHandler(callback) {
-    this.log("get brightness.");
-    if (this.brightness < 0) {
+  // Fetch appliances list with TTL caching
+  async fetchDevices() {
+    const now = Date.now();
+    if (this.cache.data && now - this.cache.timestamp < this.cache.ttl) {
+      return this.cache.data;
+    }
+    const release = await mutex.acquire();
+    try {
       const options = {
         url: `${BASE_URL}/1/appliances`,
-        headers: {
-          Authorization: `Bearer ${this.config.accessToken}`,
-        },
+        headers: { Authorization: `Bearer ${this.config.accessToken}` },
       };
-      try {
-        const responses = await request(options);
-        const device = JSON.parse(responses).filter(
-          res => res.id === this.config.id
-        )[0];
-        this.state = device.light.state.last_button;
-        if (this.state == "nigth") {
-          this.brightness = 10;
-        } else if (this.state == "on-100") {
-          this.brightness = 100;
-        } else if (this.state == "on") {
-          this.brightness = 50;
-        } else if (this.state == "off") {
-          this.brightness = 0;
-        }
-        this.log("retrieved light state from nature remo cloud.  last_button:" + this.state);
-        callback(null, this.brightness);
-      } catch (e) {
-        this.log(e);
-        callback(e);
-      }
-    } else {
-      callback(null, this.brightness);
-    }
-  }
-
-  async setBrightnessCharacteristicHandler(value, callback) {
-    this.log("set brightness:" + value);
-    if (this.night && value < 20) {
-      this.state_to = 'night'
-    } else if (this.full && value > 80) {
-      this.state_to = 'on-100'
-    } else {
-      this.state_to = 'on'
-    }
-
-    if (this.state != this.state_to) {
-      this.log("local state is different from cloud state.");
-      const options = {
-        method: 'POST',
-        url: `${BASE_URL}/1/appliances/${this.config.id}/light`,
-        form: {
-          button: this.state_to,
-        },
-        headers: {
-          Authorization: `Bearer ${this.config.accessToken}`,
-        },
-      };
-      // send http request sync
-      await this.httpRequestSerialized(options, callback, value, () => {
-        this.state = this.state_to;
-        this.brightness = value;
-      });
-    } else {
-      this.brightness = value;
-      callback(null, this.brightness);
-    }
-  }
-
-  async getOnCharacteristicHandler(callback) {
-    this.log("get power status.");
-    const options = {
-      url: `${BASE_URL}/1/appliances`,
-      headers: {
-        Authorization: `Bearer ${this.config.accessToken}`,
-      },
-    };
-    let result = false;
-    try {
-      const responses = await request(options);
-      const device = JSON.parse(responses).filter(
-        res => res.id === this.config.id
-      )[0];
-      result = device.light.state.power === 'on';
-      this.state = device.light.state.last_button;
-      this.log("retrieved light state from nature remo cloud. power:" + result + " last_button:" + this.state);
-      callback(null, result);
-    } catch (e) {
-      this.log(e);
-      callback(e);
-    }
-  }
-
-  async setOnCharacteristicHandler(value, callback) {
-    this.log("setting power state.");
-
-    const options = {
-      method: 'POST',
-      url: `${BASE_URL}/1/appliances/${this.config.id}/light`,
-      form: {
-        button: value ? this.state_to : 'off',
-      },
-      headers: {
-        Authorization: `Bearer ${this.config.accessToken}`,
-      }
-    };
-    await this.httpRequestSerialized(options, callback, value, () => {
-      this.state = value ? this.state_to : 'off';
-    }, false);
-  }
-
-  async httpRequestSerialized(option, callback, value, statehandler) {
-    let release;
-    try {
-      release = await mutex.acquire();
-      let response = await request(option);
-      statehandler();
-      callback(null);
-    } catch (e) {
-      this.log(e);
-      callback(e);
+      const body = await request(options);
+      this.cache.data = JSON.parse(body);
+      this.cache.timestamp = now;
+      return this.cache.data;
     } finally {
-      this.log(`sent ${option.form.button} button operation to nature remo cloud.`);
       release();
+    }
+  }
+
+  // GET handler for On
+  async handleGetOn(callback) {
+    try {
+      this.log('Getting power status...');
+      const devices = await this.fetchDevices();
+      const device = devices.find(d => d.id === this.config.id);
+      if (!device) throw new Error(`Device ${this.config.id} not found`);
+
+      const isOn = device.light.state.power === 'on';
+      this.state = device.light.state.last_button;
+      this.brightness = isOn ? (this.brightness >= 20 ? this.brightness : 20) : 0;
+      callback(null, isOn);
+    } catch (err) {
+      this.log.error('Error in handleGetOn:', err);
+      callback(err);
+    }
+  }
+
+  // SET handler for On
+  async handleSetOn(value, callback) {
+    try {
+      this.log(`Setting power to ${value ? 'ON' : 'OFF'}`);
+      const button = value ? 'on' : 'off';
+      await this.httpRequest({ form: { button } });
+      this.state = button;
+      this.brightness = value ? (this.brightness > 0 ? this.brightness : 20) : 0;
+      callback(null);
+    } catch (err) {
+      this.log.error('Error in handleSetOn:', err);
+      callback(err);
+    }
+  }
+
+  // GET handler for Brightness
+  async handleGetBrightness(callback) {
+    try {
+      if (this.brightness >= 0) {
+        return callback(null, this.brightness);
+      }
+      const devices = await this.fetchDevices();
+      const device = devices.find(d => d.id === this.config.id);
+      if (!device) throw new Error(`Device ${this.config.id} not found`);
+      const last = device.light.state.last_button;
+      let pct = 0;
+      switch (last) {
+        case 'off':      pct = 0;   break;
+        case 'on':       pct = 20;  break;
+        case 'on-100':   pct = 100; break;
+        default:         pct = 20;  break;
+      }
+      this.brightness = pct;
+      callback(null, pct);
+    } catch (err) {
+      this.log.error('Error in handleGetBrightness:', err);
+      callback(err);
+    }
+  }
+
+  // SET handler for Brightness
+  async handleSetBrightness(value, callback) {
+    try {
+      this.log(`Requested brightness: ${value}%`);
+      const prevStep = Math.round((this.brightness < 0 ? 0 : this.brightness) / 20);
+      const step = Math.round(value / 20);
+
+      // OFF
+      if (step === 0) {
+        await this.httpRequest({ form: { button: 'off' } });
+      }
+      // Recall last‐level (20%)
+      else if (step === 1) {
+        await this.httpRequest({ form: { button: 'on' } });
+      }
+      // FULL ON (100%)
+      else if (step === 5) {
+        await this.httpRequest({ form: { button: 'on-100' } });
+      }
+      // Intermediate: step up/down
+      else {
+        const delta = step - prevStep;
+        const button = delta > 0 ? 'bright-up' : 'bright-down';
+        for (let i = 0; i < Math.abs(delta); i++) {
+          await this.httpRequest({ form: { button } });
+        }
+      }
+
+      this.brightness = step * 20;
+      callback(null, this.brightness);
+    } catch (err) {
+      this.log.error('Error in handleSetBrightness:', err);
+      callback(err);
+    }
+  }
+
+  // Helper: serialize HTTP calls
+  async httpRequest(options) {
+    const release = await mutex.acquire();
+    try {
+      await request({
+        method: options.method || 'GET',
+        url: options.url || `${BASE_URL}/1/appliances/${this.config.id}/light`,
+        form: options.form,
+        headers: options.headers || { Authorization: `Bearer ${this.config.accessToken}` },
+      });
+    } finally {
+      release();
+      if (options.form && options.form.button) {
+        this.log(`Sent '${options.form.button}' to Nature Remo`);
+      }
     }
   }
 }
