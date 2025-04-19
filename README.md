@@ -1,50 +1,74 @@
 # Homebridge Plugin for Nature Remo Light Devices
-## 何のプラグイン？
-NatureRemoに登録された照明機器を操作するためのHomebridge用プラグインです。全灯、常夜灯がある照明に対応し、full設定がtrueの場合は明るさ81%以上で全灯、night設定がtrueの場合は明るさ19%以下で常夜灯になります。また、full設定がtrueの場合、単に照明をONにした場合は全灯になります。
 
-## 使い方
-npmでインストールします。パッケージ名はhomebridge-nature-remo-lights-extです。
+## What is this plugin?
 
-## configの書き方
-`accessories` に書き加えます。下記説明に注意しながら記入してください。
+This Homebridge accessory lets you control lights registered in your Nature Remo app directly from HomeKit. It supports 20%‑step dimming (0%, 20%, 40%, 60%, 80%, 100%) by sending the appropriate Nature Remo API commands:
 
-複数のデバイスがある場合にはそのまま複数登録してください。
+- **0%** → `off`
+- **20%** → `on` (recall last brightness)
+- **40/60/80%** → multiple `bright-up` or `bright-down` presses
+- **100%** → `on-100`
 
-- `accessory` は `NatureRemoLightDeviceExt` で固定です。
-- `accessToken` は [公式サイト](https://home.nature.global/)から発行してください。
-- `id` は下記のID取得例に従って取得してください。
-- `name` は任意に設定可能です。
-- 全灯に対応させる場合は`full` にtrueを設定してください。
-- 常夜灯に対応させる場合は`night` にtrueを設定してください。
+The slider in the Home app will snap to 20% increments for consistent behavior.
 
+## Installation
+
+Install via npm:
+
+```bash
+npm install -g homebridge-nature-remo-lighting
+```
+
+Then add the accessory to your `config.json` under `accessories`.
+
+## Configuration
+
+Add an entry like this:
 
 ```json
 "accessories": [
   {
-    "accessory": "NatureRemoLightDeviceExt",
-    "accessToken": "SECRET_TOKEN",
-    "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-    "name": "リビングの照明"
-  },
-  {
-      "accessory": "NatureRemoLightDevice",
-      "accessToken": "SECRET_TOKEN",
-      "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-      "name": "全灯と常夜灯のある照明",
-      "full": true,
-      "night": true
-  },
+    "accessory": "NatureRemoLighting",
+    "accessToken": "YOUR_SECRET_TOKEN",
+    "id": "YOUR_DEVICE_ID",
+    "name": "Living Room Light",
+    "refreshInterval": 5000    // optional cache TTL in ms (default: 5000)
+  }
 ]
 ```
 
-## ID取得例
-curlコマンドでの例です。 `SECRET_TOKEN` の箇所は各自置き換えてください。
+### Parameters
 
-このAPIを叩くと登録されているデバイスの一覧をJSONのリスト形式で取得できます。そのトップ階層にある`id`キーがconfigに記入する`id`となります。
+- **accessory**: Must be `NatureRemoLighting`.
+- **accessToken**: Your Nature Remo API token (from [https://home.nature.global](https://home.nature.global)).
+- **id**: The appliance ID obtained from the Nature Remo API.
+- **name**: Display name shown in the Home app.
+- **refreshInterval** *(optional)*: Cache time‑to‑live for the appliances list in milliseconds (default: 5000).
+
+## Retrieving Your Device ID
+
+Run:
 
 ```bash
-$ curl -X GET "https://api.nature.global/1/appliances" -H "Authorization: Bearer SECRET_TOKEN"
+curl -H "Authorization: Bearer YOUR_SECRET_TOKEN" \
+     https://api.nature.global/1/appliances | jq
 ```
 
-## ライセンス
+Look for the `id` field under the light appliance you want to control.
+
+## Command Mapping
+
+HomeKit → Nature Remo API:
+
+| Slider    | API Command                       |
+| --------- | --------------------------------- |
+| 0%        | off                               |
+| 20%       | on                                |
+| 40/60/80% | bright-up / bright-down (repeats) |
+| 100%      | on-100                            |
+
+The plugin automatically determines how many `bright-up` or `bright-down` presses are needed to reach the requested step.
+
+## License
+
 MIT
