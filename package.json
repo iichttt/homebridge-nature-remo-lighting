@@ -1,6 +1,6 @@
 {
   "name": "homebridge-nature-remo-lighting",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Homebridge accessory plugin to control Nature Remo lights with 20% step dimming support.",
   "main": "index.js",
   "keywords": [
