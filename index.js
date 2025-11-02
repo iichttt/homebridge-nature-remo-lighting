@@ -23,12 +23,10 @@ class NatureRemoLighting {
     this.config = config;
     this.api = api;
 
-    // Current state
-    this.brightness = 0;     // 0: off, 20: on (low), 100: full
-    this.lastButton = null;  // Tracks the last command sent to Nature API
-
-    // Optional cache object (currently unused)
-    this.cache = { timestamp: 0, data: null, ttl: config.refreshInterval || 5000 };
+    // 0: off, 20: low brightness, 100: full brightness
+    this.brightness = 0;
+    // Prevent duplicate or redundant API calls
+    this.lastButton = null;
 
     if (api) {
       this.api.on('didFinishLaunching', () => this.log('Homebridge finished launching'));
@@ -48,16 +46,22 @@ class NatureRemoLighting {
       .on('set', this.handleSetOn.bind(this));
 
     bulb.getCharacteristic(Characteristic.Brightness)
-      // .setProps({ minStep: 10 }) // Commented out: disable multi-step dimming
       .on('get', cb => cb(null, this.brightness))
       .on('set', this.handleSetBrightness.bind(this));
 
     return [info, bulb];
   }
 
-  // === Power On/Off handler ===
+  // === Handle Power ON/OFF ===
   async handleSetOn(value, callback) {
     try {
+      // Skip redundant Power ON if brightness already nonzero
+      if (value && this.brightness > 0) {
+        this.log(`Skipped redundant Power ON (brightness already ${this.brightness}%)`);
+        callback(null);
+        return;
+      }
+
       const button = value ? 'on' : 'off';
       this.log(`Power ${value ? 'ON (Low 20%)' : 'OFF'}`);
       await this.httpRequest(button);
@@ -69,22 +73,24 @@ class NatureRemoLighting {
     }
   }
 
-  // === Brightness handler (3-level logic) ===
+  // === Handle Brightness (3-level logic) ===
   async handleSetBrightness(value, callback) {
     try {
       let button;
+
       if (value === 0) {
         button = 'off';
       } else if (value <= 20) {
-        button = 'on';        // up to 20% → "on" (low light)
+        button = 'on'; // Low brightness
       } else {
-        button = 'on-100';    // above 20% → "on-100" (full brightness)
+        button = 'on-100'; // Full brightness
       }
 
       this.log(`Set brightness: ${value}% → ${button}`);
       await this.httpRequest(button);
 
-      this.brightness = value <= 20 ? 20 : value >= 100 ? 100 : 20;
+      // Normalize stored brightness to canonical levels
+      this.brightness = value === 0 ? 0 : value <= 20 ? 20 : 100;
       callback(null);
     } catch (err) {
       this.log.error('Error in handleSetBrightness:', err);
@@ -92,9 +98,9 @@ class NatureRemoLighting {
     }
   }
 
-  // === Nature API communication (with duplicate-command suppression) ===
+  // === Nature API communication (with duplicate suppression) ===
   async httpRequest(button) {
-    // Skip sending if command is identical to the last one
+    // Skip sending if command identical to last
     if (this.lastButton === button) {
       this.log(`Skipped '${button}' (no change)`);
       return;
