@@ -1,6 +1,6 @@
 {
   "name": "homebridge-nature-remo-lighting",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Homebridge plugin for Nature Remo light devices with simple 3-level brightness control (off / low / full) and minimal API requests.",
   "main": "index.js",
   "keywords": [
