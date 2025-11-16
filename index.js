@@ -30,6 +30,7 @@ try {
     keepAliveTimeout: 30_000,
     keepAliveMaxTimeout: 60_000,
     connections: 4, // overridden by config.keepAliveConnections if set
+    connect: { timeout: 5000 }
   }));
 } catch {
   // undici not available; fine, just skip keep-alive tuning
@@ -55,6 +56,9 @@ class NatureRemoLightingAccessory {
     this.fastDebounceMs = numOr(config.fastDebounceMs, 80);
     this.fireAndForget = !!config.fireAndForget;
     this.keepAliveConnections = numOr(config.keepAliveConnections, 4);
+    this.httpTimeoutMs = numOr(config.httpTimeoutMs, 4000);
+    this.retries = numOr(config.retries, 2);
+    this.forceIPv4 = !!config.forceIPv4; // reserved for future use
     this.buttonMap = Object.assign(
       { low: 'on', full: 'on-100', off: 'off' },
       config.buttonMap || {}
@@ -67,6 +71,7 @@ class NatureRemoLightingAccessory {
         keepAliveTimeout: 30_000,
         keepAliveMaxTimeout: 60_000,
         connections: this.keepAliveConnections,
+        connect: { timeout: 5000 }
       }));
     } catch {}
 
@@ -227,23 +232,57 @@ class NatureRemoLightingAccessory {
     }
 
     const url = `https://api.nature.global/1/appliances/${encodeURIComponent(this.applianceId)}/light`;
-    const start = Date.now();
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.token}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: `button=${encodeURIComponent(button)}`
-    });
-    const ms = Date.now() - start;
+    const body = `button=${encodeURIComponent(button)}`;
+    let attempt = 0;
+    let backoff = 250;
+    const maxAttempts = Math.max(1, this.retries + 1);
 
-    if (!res.ok) {
-      let text = '';
-      try { text = await res.text(); } catch {}
-      throw new Error(`HTTP ${res.status} ${res.statusText} (${ms}ms): ${text}`);
+    while (attempt < maxAttempts) {
+      const start = Date.now();
+      const ac = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      let timer = null;
+      try {
+        if (ac) {
+          timer = setTimeout(() => ac.abort(), this.httpTimeoutMs);
+        }
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.token}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body,
+          signal: ac ? ac.signal : undefined
+        });
+        const ms = Date.now() - start;
+
+        if (!res.ok) {
+          let text = '';
+          try { text = await res.text(); } catch {}
+          throw new Error(`HTTP ${res.status} ${res.statusText} (${ms}ms): ${text}`);
+        }
+        this.log.info(`[${this.name}] Sent button='${button}' (${ms}ms)`);
+        return; // success
+      } catch (e) {
+        if (timer) clearTimeout(timer);
+        const code = e && (e.code || e.name || e.type);
+        const isAbort = (e && (e.name === 'AbortError' || code === 'ABORT_ERR'));
+        const ms = Date.now() - start;
+        const detail = e && e.message ? e.message : String(e);
+        if (attempt < maxAttempts - 1) {
+          this.log.warn(`[${this.name}] Attempt ${attempt + 1} failed for '${button}' (${ms}ms): ${detail}. Retrying in ${backoff}ms...`);
+          await new Promise(r => setTimeout(r, backoff));
+          backoff = Math.min(backoff * 2, 2000);
+          attempt++;
+          continue;
+        } else {
+          this.log.error(`[${this.name}] Send failed for '${button}' after ${maxAttempts} attempt(s) (${ms}ms): ${detail}`);
+          throw e;
+        }
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     }
-    this.log.info(`[${this.name}] Sent button='${button}' (${ms}ms)`);
   }
 
   // ---------- Homebridge ----------
@@ -275,3 +314,4 @@ function normalizeLevel(level, low) {
 function numOr(v, dflt) {
   return Number.isFinite(Number(v)) ? Number(v) : dflt;
 }
+// Note: forceIPv4 is reserved for future use (custom DNS lookup); current Agent uses default OS resolution.
