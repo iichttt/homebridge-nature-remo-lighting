@@ -170,26 +170,17 @@ class NatureRemoLightingAccessory {
     this.currentOn = effectiveLevel > 0;
     if (effectiveLevel > 0) this.currentBrightness = effectiveLevel;
 
-    // Decide "button" to press via buttonMap
+    // Decide "button" to press via buttonMap (two-bucket: <=low => low, else => full)
     let button;
     if (effectiveLevel === 0) {
       this.infoLog(`Turning off`);
       button = this.buttonMap.off || 'off';
-    } else if (effectiveLevel >= 100) {
-      this.infoLog(`Full brightness (100%)`);
-      button = this.buttonMap.full || 'on-100';
     } else if (effectiveLevel <= this.lowLevel) {
       this.infoLog(`Low light (${this.lowLevel}%)`);
       button = this.buttonMap.low || 'on';
     } else {
-      // Mid-level handling: fall back toward closest available button
-      if (effectiveLevel >= 90) {
-        this.infoLog(`Brightness ${effectiveLevel}% (using 100%)`);
-        button = this.buttonMap.full || 'on-100';
-      } else {
-        this.infoLog(`Brightness ${effectiveLevel}% (fallback to low)`);
-        button = this.buttonMap.low || 'on';
-      }
+      this.infoLog(`Full brightness (100%)`);
+      button = this.buttonMap.full || 'on-100';
     }
 
     // Send command (with replace-latest behavior)
@@ -278,9 +269,8 @@ function clampInt(n, min, max) {
 }
 function normalizeLevel(level, low) {
   if (level <= 0) return 0;
-  if (level >= 100) return 100;
   if (level <= low) return low;
-  return clampInt(level, low + 1, 99);
+  return 100;
 }
 function numOr(v, dflt) {
   return Number.isFinite(Number(v)) ? Number(v) : dflt;
