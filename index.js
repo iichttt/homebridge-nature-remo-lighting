@@ -1,116 +1,287 @@
-const axios = require("axios");
-const querystring = require("querystring");
-const semaphore = require("await-semaphore");
+// index.js
+// Homebridge accessory: Nature Remo Lighting (coalesced + responsive, using APPLIANCE IDs)
+//
+// This version uses Nature Remo "appliance" endpoints (no /signals IDs needed).
+// For LIGHT appliances we POST button presses to:
+//   POST https://api.nature.global/1/appliances/{applianceId}/light
+// with body: button=on|off|on-100|night|bright-up|bright-down
+//
+// Extra config knobs:
+//  - applianceId: REQUIRED (from /1/appliances response for each LIGHT)
+//  - token: REQUIRED (Nature Remo access token)
+//  - lowLevel: percent for the "on" (low light) bucket (default 20)
+//  - debounceMs: base coalescing window while user is sliding (default 220)
+//  - fastDebounceMs: used for "final" levels 0/low/100 (default 80)
+//  - fireAndForget: if true, don't await HTTP (default false)
+//  - keepAliveConnections: HTTP keep-alive pool size (default 4)
+//  - buttonMap: optional overrides if your remote uses different names
+//      {
+//        "low": "on",
+//        "full": "on-100",
+//        "off": "off"
+//      }
 
-const mutex = new semaphore.Mutex();
-let Service, Characteristic;
-const BASE_URL = "https://api.nature.global";
+let Service, Characteristic, HapStatusError, HAPStatus;
 
-module.exports = (homebridge) => {
-  Service = homebridge.hap.Service;
-  Characteristic = homebridge.hap.Characteristic;
+// --- undici keep-alive for global fetch (Node 18+ uses undici under the hood)
+try {
+  const { setGlobalDispatcher, Agent } = require('undici');
+  setGlobalDispatcher(new Agent({
+    keepAliveTimeout: 30_000,
+    keepAliveMaxTimeout: 60_000,
+    connections: 4, // overridden by config.keepAliveConnections if set
+  }));
+} catch {
+  // undici not available; fine, just skip keep-alive tuning
+}
 
-  homebridge.registerAccessory(
-    "homebridge-nature-remo-lighting",
-    "NatureRemoLighting",
-    NatureRemoLighting
-  );
+module.exports = (api) => {
+  Service = api.hap.Service;
+  Characteristic = api.hap.Characteristic;
+  HapStatusError = api.hap.HapStatusError;
+  HAPStatus = api.hap.HAPStatus;
+
+  api.registerAccessory('homebridge-nature-remo-lighting', 'NatureRemoLighting', NatureRemoLightingAccessory);
 };
 
-class NatureRemoLighting {
-  constructor(log, config, api) {
+class NatureRemoLightingAccessory {
+  constructor(log, config) {
     this.log = log;
-    this.config = config;
-    this.api = api;
+    this.name = config.name || 'Nature Remo Light';
+    this.token = config.token;
+    this.applianceId = config.applianceId;
+    this.lowLevel = numOr(config.lowLevel, 20);
+    this.debounceMs = numOr(config.debounceMs, 220);
+    this.fastDebounceMs = numOr(config.fastDebounceMs, 80);
+    this.fireAndForget = !!config.fireAndForget;
+    this.keepAliveConnections = numOr(config.keepAliveConnections, 4);
+    this.buttonMap = Object.assign(
+      { low: 'on', full: 'on-100', off: 'off' },
+      config.buttonMap || {}
+    );
 
-    // 0 = off, 20 = low light, 100 = full brightness
-    this.brightness = 0;
-    this.lastButton = null;
-
-    if (api) {
-      this.api.on("didFinishLaunching", () => this.log("Homebridge finished launching"));
-    }
-  }
-
-  getServices() {
-    const info = new Service.AccessoryInformation()
-      .setCharacteristic(Characteristic.Manufacturer, "Nature, Inc.")
-      .setCharacteristic(Characteristic.Model, "NatureRemo")
-      .setCharacteristic(Characteristic.SerialNumber, this.config.id);
-
-    const bulb = new Service.Lightbulb(this.config.name);
-
-    // On characteristic is derived from brightness > 0
-    bulb.getCharacteristic(Characteristic.On)
-      .on("get", (cb) => cb(null, this.brightness > 0))
-      .on("set", (value, cb) => {
-        const target = value ? (this.brightness === 0 ? 20 : this.brightness) : 0;
-        this.handleSetBrightness(target, cb);
-      });
-
-    bulb.getCharacteristic(Characteristic.Brightness)
-      .on("get", (cb) => cb(null, this.brightness))
-      .on("set", this.handleSetBrightness.bind(this));
-
-    return [info, bulb];
-  }
-
-  // === Unified Brightness Control ===
-  async handleSetBrightness(value, callback) {
+    // If user set keepAliveConnections and undici is present, re-set dispatcher
     try {
-      // Quantize to 3 levels: 0 / 20 / 100
-      const newLevel = value === 0 ? 0 : value <= 20 ? 20 : 100;
-      if (newLevel === this.brightness) {
-        this.log(`Skipped brightness ${value}% (same level ${this.brightness}%)`);
-        callback(null);
-        return;
-      }
+      const { setGlobalDispatcher, Agent } = require('undici');
+      setGlobalDispatcher(new Agent({
+        keepAliveTimeout: 30_000,
+        keepAliveMaxTimeout: 60_000,
+        connections: this.keepAliveConnections,
+      }));
+    } catch {}
 
-      let button, desc;
-      if (newLevel === 0) {
-        button = "off";
-        desc = "Turn off";
-      } else if (newLevel === 20) {
-        button = "on";
-        desc = "Low light (20%)";
-      } else {
-        button = "on-100";
-        desc = "Full brightness (100%)";
-      }
-
-      this.log(`${desc}`);
-      await this.httpRequest(button);
-      this.brightness = newLevel;
-      callback(null);
-    } catch (err) {
-      this.log.error("Error in handleSetBrightness:", err);
-      callback(err);
+    if (!this.token) {
+      this.log.warn(`[${this.name}] No Nature Remo token set. Commands will be skipped.`);
     }
+    if (!this.applianceId) {
+      this.log.warn(`[${this.name}] 'applianceId' not configured. Find it in /1/appliances and set it in config.json.`);
+    }
+
+    // HomeKit service/characteristics
+    this.service = new Service.Lightbulb(this.name);
+    this.service.getCharacteristic(Characteristic.On)
+      .onSet(this.setOn.bind(this))
+      .onGet(this.getOn.bind(this));
+
+    this.service.getCharacteristic(Characteristic.Brightness)
+      .onSet(this.setBrightness.bind(this))
+      .onGet(this.getBrightness.bind(this));
+
+    // Internal state
+    this.currentOn = false;
+    this.currentBrightness = 100;
+    this.lastEffectiveLevel = 0;
+
+    // Coalescing + queue
+    this.pending = null;         // { on: boolean, brightness: number|null }
+    this.applyTimer = null;
+    this.inFlight = false;       // true while HTTP is in flight
+    this.replaceAfterFlight = null; // latest target to apply right after current HTTP finishes
   }
 
-  // === Nature API with duplicate suppression ===
-  async httpRequest(button) {
-    if (this.lastButton === button) {
-      this.log(`Skipped '${button}' (no change)`);
+  // ---------- HomeKit handlers ----------
+
+  async setOn(value) {
+    this.currentOn = !!value;
+    this.queueTarget({ on: this.currentOn, brightness: null });
+  }
+
+  async setBrightness(value) {
+    const v = clampInt(value, 1, 100);
+    this.currentBrightness = v;
+    this.queueTarget({ on: true, brightness: v });
+  }
+
+  async getOn() { return this.currentOn; }
+  async getBrightness() { return this.currentBrightness; }
+
+  // ---------- Coalescing / Queue ----------
+
+  queueTarget(partial) {
+    // Merge into pending target
+    if (!this.pending) {
+      this.pending = { on: (typeof partial.on === 'boolean') ? partial.on : this.currentOn, brightness: null };
+    }
+    if (typeof partial.on === 'boolean') this.pending.on = partial.on;
+    if (typeof partial.brightness === 'number') this.pending.brightness = partial.brightness;
+
+    // Adaptive debounce: use faster window for "final" bucket values (0/low/100)
+    const eff = this.computeEffective(this.pending);
+    const delay = (eff === 0 || eff === this.lowLevel || eff === 100) ? this.fastDebounceMs : this.debounceMs;
+
+    if (this.applyTimer) clearTimeout(this.applyTimer);
+    this.applyTimer = setTimeout(() => this.applyPending().catch(e => this.log.error(e?.stack || String(e))), delay);
+  }
+
+  computeEffective(target) {
+    const on = !!target.on;
+    if (!on) return 0;
+    const level = clampInt(target.brightness ?? this.currentBrightness ?? this.lowLevel, 1, 100);
+    return normalizeLevel(level, this.lowLevel);
+  }
+
+  async applyPending() {
+    this.applyTimer = null;
+    const target = this.pending;
+    this.pending = null;
+    if (!target) return;
+
+    const effectiveLevel = this.computeEffective(target);
+
+    // Same-level skip
+    if (effectiveLevel === this.lastEffectiveLevel) {
+      this.debugLog(`Skipping (same level ${effectiveLevel}%)`);
       return;
     }
 
-    const release = await mutex.acquire();
-    try {
-      await axios.post(
-        `${BASE_URL}/1/appliances/${this.config.id}/light`,
-        querystring.stringify({ button }),
-        {
-          headers: {
-            Authorization: `Bearer ${this.config.accessToken}`,
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-        }
-      );
-      this.lastButton = button;
-      this.log(`Sent '${button}'`);
-    } finally {
-      release();
+    // If a previous HTTP send is in flight, remember only the latest target
+    if (this.inFlight) {
+      this.replaceAfterFlight = effectiveLevel;
+      this.debugLog(`HTTP in flight; queued latest target ${effectiveLevel}%`);
+      return;
+    }
+
+    await this.applyLevel(effectiveLevel);
+  }
+
+  async applyLevel(effectiveLevel) {
+    // Optimistic state update for "snappiness" in Home UI
+    this.lastEffectiveLevel = effectiveLevel;
+    this.currentOn = effectiveLevel > 0;
+    if (effectiveLevel > 0) this.currentBrightness = effectiveLevel;
+
+    // Decide "button" to press via buttonMap
+    let button;
+    if (effectiveLevel === 0) {
+      this.infoLog(`Turning off`);
+      button = this.buttonMap.off || 'off';
+    } else if (effectiveLevel >= 100) {
+      this.infoLog(`Full brightness (100%)`);
+      button = this.buttonMap.full || 'on-100';
+    } else if (effectiveLevel <= this.lowLevel) {
+      this.infoLog(`Low light (${this.lowLevel}%)`);
+      button = this.buttonMap.low || 'on';
+    } else {
+      // Mid-level handling: fall back toward closest available button
+      if (effectiveLevel >= 90) {
+        this.infoLog(`Brightness ${effectiveLevel}% (using 100%)`);
+        button = this.buttonMap.full || 'on-100';
+      } else {
+        this.infoLog(`Brightness ${effectiveLevel}% (fallback to low)`);
+        button = this.buttonMap.low || 'on';
+      }
+    }
+
+    // Send command (with replace-latest behavior)
+    this.inFlight = true;
+    const sendPromise = this.sendLightButton(button).catch(e => {
+      this.log.error(`[${this.name}] Send failed for '${button}': ${e.message || e}`);
+    });
+
+    if (this.fireAndForget) {
+      // Do not await; but still chain "after flight" logic
+      sendPromise.finally(() => this.afterFlight());
+    } else {
+      await sendPromise.finally(() => this.afterFlight());
     }
   }
+
+  async afterFlight() {
+    this.inFlight = false;
+    if (this.replaceAfterFlight != null) {
+      const next = this.replaceAfterFlight;
+      this.replaceAfterFlight = null;
+
+      // If another pending came in meanwhile, compute the freshest target
+      if (this.pending) {
+        const eff = this.computeEffective(this.pending);
+        // Prefer the most recent (pending) over stored replace value
+        await this.applyLevel(eff);
+      } else {
+        await this.applyLevel(next);
+      }
+    }
+  }
+
+  // ---------- Sending using APPLIANCE endpoint ----------
+
+  async sendLightButton(button) {
+    if (!this.token) {
+      this.log.warn(`[${this.name}] (dry-run) Would send button='${button}' (no token configured)`);
+      return;
+    }
+    if (!this.applianceId) {
+      this.log.warn(`[${this.name}] (dry-run) Would send button='${button}' (no applianceId configured)`);
+      return;
+    }
+
+    const url = `https://api.nature.global/1/appliances/${encodeURIComponent(this.applianceId)}/light`;
+    const start = Date.now();
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.token}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: `button=${encodeURIComponent(button)}`
+    });
+    const ms = Date.now() - start;
+
+    if (!res.ok) {
+      let text = '';
+      try { text = await res.text(); } catch {}
+      throw new Error(`HTTP ${res.status} ${res.statusText} (${ms}ms): ${text}`);
+    }
+    this.log.info(`[${this.name}] Sent button='${button}' (${ms}ms)`);
+  }
+
+  // ---------- Homebridge ----------
+
+  getServices() {
+    const informationService = new Service.AccessoryInformation()
+      .setCharacteristic(Characteristic.Manufacturer, 'Nature Remo + Homebridge')
+      .setCharacteristic(Characteristic.Model, 'Lighting (Coalesced/Responsive, ApplianceIDs)')
+      .setCharacteristic(Characteristic.SerialNumber, 'NRL-RESP-APPL-1');
+    return [informationService, this.service];
+  }
+
+  // ---------- Logs ----------
+  infoLog(msg) { this.log.info(`[${this.name}] ${msg}`); }
+  debugLog(msg) { this.log.debug(`[${this.name}] ${msg}`); }
+}
+
+// ---------- Utils ----------
+function clampInt(n, min, max) {
+  n = Math.round(Number(n));
+  if (!Number.isFinite(n)) n = min;
+  return Math.max(min, Math.min(max, n));
+}
+function normalizeLevel(level, low) {
+  if (level <= 0) return 0;
+  if (level >= 100) return 100;
+  if (level <= low) return low;
+  return clampInt(level, low + 1, 99);
+}
+function numOr(v, dflt) {
+  return Number.isFinite(Number(v)) ? Number(v) : dflt;
 }
